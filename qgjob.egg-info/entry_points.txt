@@ -1,0 +1,2 @@
+[console_scripts]
+qgjob = cli.main:main

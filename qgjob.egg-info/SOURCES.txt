@@ -1,0 +1,7 @@
+setup.py
+qgjob.egg-info/PKG-INFO
+qgjob.egg-info/SOURCES.txt
+qgjob.egg-info/dependency_links.txt
+qgjob.egg-info/entry_points.txt
+qgjob.egg-info/requires.txt
+qgjob.egg-info/top_level.txt
