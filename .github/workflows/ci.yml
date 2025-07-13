@@ -19,6 +19,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+          pip install -r requirements.txt  # if you need main deps too
 
       - name: Run tests
-        run: pytest
+        run: |
+          ls -R  # optional: keep if debugging
+          PYTHONPATH=. pytest -v
