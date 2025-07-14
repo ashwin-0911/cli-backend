@@ -4,53 +4,81 @@ This project implements a backend system to manage, queue, and execute AppWright
 
 ## Features
 
-- Job Queueing  
-  Submit test jobs with org_id, app_version, target device, and priority. Each job is stored with metadata in Redis.
+### Job Queueing
 
-- Priority Scheduling  
-  Jobs are processed based on priority using Redis sorted sets.
+Submit test jobs using the `/submit` endpoint with fields like `org_id`, `app_version_id`, `test_path`, `priority`, and `target`. Each job is stored in Redis with a unique `job_id` and metadata, including creation time and retry count.
 
-- Batch Processing  
-  Jobs are dequeued in batches per target-app_version pair, optimizing emulator boot time and resource efficiency.
+### Priority Scheduling
 
-- Horizontal Scalability  
-  Multiple worker containers can run in parallel with `docker-compose --scale`, enabling distributed load handling.
+Jobs are stored in Redis sorted sets, allowing high-priority jobs (higher `priority` value) to be processed before lower-priority ones.
 
-- Job Status Tracking  
-  Each job has a UUID and status (queued, running, done, failed) tracked via Redis hash.
+### Batch Processing
 
-- Retry Logic with Limits  
-  Jobs failing during execution are retried up to a configurable limit (max_retries), after which they are marked as failed.
+Jobs are dequeued in batches (default size 3) based on their `app_version_id` and `target`. This minimizes emulator boot overhead and improves resource utilization.
 
-- Visibility Timeout  
-  Jobs stuck in running state beyond a threshold are automatically requeued to prevent deadlocks.
+### Horizontal Scalability
 
-- FastAPI Backend with Swagger UI  
-  Submit jobs and query status through a clean REST API (available at /docs).
+Multiple worker containers can be spawned using Docker Compose. For example:
 
-- Unit Tests with FakeRedis  
-  Fully tested Redis logic using pytest and fakeredis for isolated, deterministic test runs.
+```
+docker-compose up --build --scale qg-worker=3
+```
 
-- CI Integration  
-  GitHub Actions workflow runs all tests on push to ensure reliability.
+Each worker polls Redis independently and processes available jobs. This allows concurrent job handling and dynamic scaling.
+
+### Job Status Tracking
+
+Each job's current status (`queued`, `running`, `done`, or `failed`) is stored in a Redis hash and can be queried via:
+
+```
+GET /status/<job_id>
+```
+
+### Retry Logic with Limits
+
+Failed jobs are retried automatically. Each job has a `retries` counter and a `max_retries` limit (default: 3). Once the limit is exceeded, the job is marked as `failed` and will not be retried further.
+
+### Visibility Timeout
+
+If a job remains in the `running` state beyond a threshold (default: 30 seconds), it is assumed to be stuck and automatically requeued. This prevents deadlocks and ensures resilience in the case of crashed or slow workers.
+
+### FastAPI Backend with Swagger UI
+
+The system exposes a REST API to submit and monitor jobs. Interactive documentation is available at:
+
+```
+http://localhost:8000/docs
+```
+
+### Unit Tests with FakeRedis
+
+The Redis job queue logic is covered by a suite of unit tests using `pytest` and `fakeredis`, ensuring isolation and reliability. This includes tests for job creation, status updates, retries, and visibility timeout logic.
+
+### CI Integration
+
+GitHub Actions workflow (`.github/workflows/ci.yml`) runs all tests on every push. It:
+
+* Installs Python 3.11
+* Installs test dependencies from `requirements-dev.txt`
+* Runs the test suite and fails the build on any test error
 
 ## Architecture Overview
 
 ```
 client (CLI / API consumer)
-    │
-    ▼
- FastAPI backend ───> Redis (job store + queues)
-    │
-    ▼
- Worker simulator(s) (via Docker)
+    |
+    v
+FastAPI backend --> Redis (job store + queues)
+    |
+    v
+worker simulator(s) (via Docker)
 ```
 
-Jobs are stored as Redis hashes.  
-Priority queues use Redis sorted sets per (app_version, target) key.  
-Workers pull jobs in batches, run them, and update Redis.
+* Jobs are stored in Redis hashes
+* Queues use sorted sets (`queue:<app_version_id>:<target>`)
+* Workers poll Redis in batches, simulate test execution, and update job status
 
-## Installation
+## Installation (Local)
 
 ```
 git clone https://github.com/<your-username>/cli-backend.git
@@ -68,7 +96,7 @@ pip install -r requirements.txt
 uvicorn server.app:app --reload
 ```
 
-### Submit a job (example)
+### Submit a job
 
 ```
 curl -X POST http://localhost:8000/submit -H "Content-Type: application/json" -d '{
@@ -80,7 +108,7 @@ curl -X POST http://localhost:8000/submit -H "Content-Type: application/json" -d
 }'
 ```
 
-### Check status
+### Check job status
 
 ```
 GET http://localhost:8000/status/<job_id>
@@ -88,11 +116,17 @@ GET http://localhost:8000/status/<job_id>
 
 ## Docker Deployment
 
-### Build and run
+### Build and run the system
 
 ```
 docker-compose up --build --scale qg-worker=3
 ```
+
+This starts:
+
+* The FastAPI backend (on port 8000)
+* A Redis container with persistent volume `redis-data`
+* 3 worker containers to process jobs concurrently
 
 ### Tear down
 
@@ -102,36 +136,42 @@ docker-compose down
 
 ### Redis volume
 
-Redis data persists using a Docker volume (redis-data) to ensure visibility timeout logic works reliably across restarts.
+Redis state is stored in a Docker volume (`redis-data`) to preserve job data, retry counts, and visibility timeout information across restarts.
 
 ## Testing
 
-Run all unit tests:
+Run the full test suite:
 
 ```
 pytest
 ```
 
-Tests cover:
-- Job creation and status updates
-- Dequeueing and requeueing
-- Retry logic and visibility timeout handling
+Covered scenarios:
+
+* Job creation and metadata
+* Job dequeue and requeue
+* Retry logic up to `max_retries`
+* Visibility timeout recovery
+* Status endpoint accuracy
 
 ## CI/CD
 
-CI workflow is defined in `.github/workflows/ci.yml`. It:
-- Sets up Python 3.11
-- Installs development dependencies
-- Runs unit tests with pytest
-- Fails on any test error (exit code ≠ 0)
+CI is configured using GitHub Actions (`.github/workflows/ci.yml`). It:
+
+* Uses `ubuntu-latest` runner
+* Sets up Python 3.11
+* Installs all test dependencies
+* Runs all tests with `pytest`
+* Fails the build if any test fails (exit code != 0)
 
 ## Design Decisions
 
-- Redis as the job store was chosen for fast access, sorted set support, and visibility timeout patterns.
-- UUIDs for job IDs ensure traceability across distributed workers.
-- Dockerized architecture allows easy horizontal scaling, batch simulation, and cross-environment use.
-- Batch processing ensures emulator booting is amortized over multiple jobs, improving efficiency.
+* Redis was chosen for its atomic operations, support for sorted sets (for prioritization), and TTL-based recovery mechanisms.
+* Jobs use UUIDs for global traceability.
+* Docker-based horizontal scaling makes it easy to spawn multiple workers with a single flag.
+* Visibility timeout ensures fault-tolerance for jobs stuck due to system issues.
+* Batch execution amortizes expensive emulator boot time.
 
 ## License
 
-MIT License. See LICENSE for details.
+MIT License. See `LICENSE` file for full terms.
